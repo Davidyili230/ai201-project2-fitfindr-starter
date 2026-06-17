@@ -1,0 +1,2 @@
+Input example (good): vintage graphic tee under $30
+Input example (bad): designer ballgown size XXS under $5
