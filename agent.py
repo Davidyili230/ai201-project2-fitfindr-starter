@@ -18,7 +18,15 @@ Usage (once implemented):
     print(result["error"])   # None on success
 """
 
+import json
+import os
+
+from dotenv import load_dotenv
+from groq import Groq
+
 from tools import search_listings, suggest_outfit, create_fit_card
+
+load_dotenv()
 
 
 # ── session state ─────────────────────────────────────────────────────────────
@@ -92,9 +100,70 @@ def run_agent(query: str, wardrobe: dict) -> dict:
     Before writing code, complete the Planning Loop and State Management sections
     of planning.md — your implementation should match what you described there.
     """
-    # TODO: implement the planning loop
+    # Step 1: Initialize session
     session = _new_session(query, wardrobe)
-    session["error"] = "Planning loop not yet implemented."
+
+    # Step 2: Parse the query with Groq LLM to extract structured fields
+    try:
+        api_key = os.environ.get("GROQ_API_KEY")
+        client = Groq(api_key=api_key)
+        parse_prompt = (
+            "Extract search parameters from this clothing query. "
+            "Return ONLY a JSON object with these fields:\n"
+            '  "description": clothing keywords only (e.g. "vintage graphic tee"),\n'
+            '  "size": size string or null if not mentioned,\n'
+            '  "max_price": price ceiling as a number or null if not mentioned.\n\n'
+            f"Query: {query}\n\n"
+            "JSON only, no explanation:"
+        )
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": parse_prompt}],
+            temperature=0.0,
+        )
+        raw = response.choices[0].message.content.strip()
+        # Strip markdown code fences if present
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        parsed = json.loads(raw)
+        session["parsed"] = {
+            "description": parsed.get("description", query),
+            "size": parsed.get("size"),
+            "max_price": parsed.get("max_price"),
+        }
+    except Exception:
+        # Fallback: use the raw query as description with no filters
+        session["parsed"] = {"description": query, "size": None, "max_price": None}
+
+    # Step 3: Search for listings; early exit if nothing found
+    session["search_results"] = search_listings(
+        session["parsed"]["description"],
+        session["parsed"]["size"],
+        session["parsed"]["max_price"],
+    )
+    if not session["search_results"]:
+        session["error"] = (
+            "Sorry, I couldn't find any listings matching your search. "
+            "Try using broader keywords, skipping the size filter, or raising your budget."
+        )
+        return session
+
+    # Step 4: Select the top result
+    session["selected_item"] = session["search_results"][0]
+
+    # Step 5: Generate outfit suggestion
+    session["outfit_suggestion"] = suggest_outfit(
+        session["selected_item"], session["wardrobe"]
+    )
+
+    # Step 6: Generate fit card caption
+    session["fit_card"] = create_fit_card(
+        session["outfit_suggestion"], session["selected_item"]
+    )
+
+    # Step 7: Return completed session
     return session
 
 
