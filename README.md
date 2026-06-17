@@ -1,8 +1,50 @@
-# FitFindr — Starter Kit
+# FitFindr
 
-This starter kit contains everything you need to begin Project 2.
+FitFindr is a planning agent that helps users find secondhand clothing and style it. Given a natural language query, it searches a mock listings dataset, generates outfit suggestions using the user's wardrobe, and produces a shareable social media caption — all in a single multi-step interaction orchestrated by a planning loop.
 
-## What's Included
+## What the Agent Does
+
+A complete interaction looks like this:
+
+1. **User submits a query** — e.g., "vintage graphic tee under $30, size M. I mostly wear baggy jeans and chunky sneakers."
+2. **Planning loop parses the query** — an LLM call extracts `description`, `size`, and `max_price` as structured fields.
+3. **`search_listings` runs** — filters 40 mock listings by price and size, scores by keyword overlap, returns up to 3 matches sorted by relevance.
+4. **`suggest_outfit` runs** — given the top match and the user's wardrobe, the LLM suggests 1–2 complete outfit combinations naming specific wardrobe pieces.
+5. **`create_fit_card` runs** — the LLM generates a 2–4 sentence Instagram/TikTok-style OOTD caption referencing the item name, price, and platform.
+6. **Results display** in three panels: found item, outfit advice, and fit card caption.
+
+## How the Planning Loop Works
+
+The loop in `run_agent()` (`agent.py`) follows a **linear 7-step sequence with one early-exit branch**:
+
+```
+Step 1  → Initialize session dict
+Step 2  → LLM parses query → session["parsed"]
+Step 3  → search_listings() → session["search_results"]
+           └─ if empty: set session["error"], return early (steps 4–6 skipped)
+Step 4  → session["selected_item"] = search_results[0]
+Step 5  → suggest_outfit(selected_item, wardrobe) → session["outfit_suggestion"]
+Step 6  → create_fit_card(outfit_suggestion, selected_item) → session["fit_card"]
+Step 7  → return session
+```
+
+The key decision point is after `search_listings`: if no listings match the query, the loop sets `session["error"]` and returns immediately — `suggest_outfit` and `create_fit_card` are never called with empty input.
+
+State passes between tools through the single `session` dict — no global variables, no re-prompting the user between steps. The output of each tool is stored in `session` and read as arguments to the next tool.
+
+## Error Handling Strategy
+
+Each tool handles its own failure mode and never raises an unhandled exception:
+
+| Tool | Failure mode | Behavior |
+|------|-------------|----------|
+| `search_listings` | No listings match filters | Returns `[]`; planning loop sets `session["error"]` and exits early with a helpful message telling the user to try broader keywords, skip the size filter, or raise their budget. |
+| `suggest_outfit` | User has an empty wardrobe | Still calls the LLM with a prompt asking for general pairing advice (bottom types, shoe styles, vibe). Returns a non-empty suggestion string — the loop proceeds normally. If the LLM API call fails, returns a fallback string rather than crashing. |
+| `create_fit_card` | `outfit` argument is empty or whitespace | Returns the error string `"Could not generate a fit card: no outfit suggestion was provided."` without calling the LLM. The session is still returned; `session["error"]` stays `None`. |
+
+The guiding principle: **fail informatively, never silently**. Every failure path produces a specific, user-readable string that either explains what went wrong or what to try next.
+
+## Project Structure
 
 ```
 ai201-project2-fitfindr-starter/
@@ -10,52 +52,45 @@ ai201-project2-fitfindr-starter/
 │   ├── listings.json          # 40 mock secondhand listings
 │   └── wardrobe_schema.json   # Wardrobe format + example wardrobe
 ├── utils/
-│   └── data_loader.py         # Helper functions for loading the data
-├── planning.md                # Your planning template — fill this out first
+│   └── data_loader.py         # load_listings(), get_example_wardrobe(), get_empty_wardrobe()
+├── tests/
+│   └── test_tools.py          # Pytest tests for all 3 tools + failure modes
+├── tools.py                   # search_listings, suggest_outfit, create_fit_card
+├── agent.py                   # run_agent() — the planning loop
+├── app.py                     # Gradio UI — handle_query() calls run_agent()
+├── planning.md                # Full design spec, agent diagram, AI tool plan
 └── requirements.txt           # Python dependencies
 ```
 
 ## Setup
 
 ```bash
+python -m venv .venv
+source .venv/bin/activate      # Mac/Linux
 pip install -r requirements.txt
 ```
 
-Set your Groq API key in a `.env` file (get a free key at [console.groq.com](https://console.groq.com)):
+Create a `.env` file in the repo root (never commit this):
 ```
 GROQ_API_KEY=your_key_here
 ```
 
-## The Mock Listings Dataset
+Get a free key at [console.groq.com](https://console.groq.com) — no credit card required.
 
-`data/listings.json` contains 40 mock secondhand listings across categories (tops, bottoms, outerwear, shoes, accessories) and styles (vintage, y2k, grunge, cottagecore, streetwear, and more).
+## Running the App
 
-Each listing has: `id`, `title`, `description`, `category`, `style_tags`, `size`, `condition`, `price`, `colors`, `brand`, and `platform`.
-
-Load it with:
-```python
-from utils.data_loader import load_listings
-listings = load_listings()
+```bash
+python app.py
 ```
 
-## The Wardrobe Schema
+Opens a Gradio UI at `http://localhost:7860`.
 
-`data/wardrobe_schema.json` defines the format your agent uses to represent a user's existing wardrobe. It includes:
-
-- `schema`: field definitions for a wardrobe item
-- `example_wardrobe`: a sample wardrobe with 10 items you can use for testing
-- `empty_wardrobe`: a starting template for a new user
-
-Load an example wardrobe with:
-```python
-from utils.data_loader import get_example_wardrobe
-wardrobe = get_example_wardrobe()
+To test the planning loop directly:
+```bash
+python agent.py
 ```
 
-## Where to Start
-
-1. **Read `planning.md` and fill it out before writing any code.**
-2. Verify the data loads correctly by running `python utils/data_loader.py`.
-3. Build and test each tool individually before connecting them through your planning loop.
-
-Your implementation files go in this same directory. There's no required file structure for your agent code — organize it however makes sense for your design.
+To run the test suite:
+```bash
+pytest tests/
+```
